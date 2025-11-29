@@ -1,13 +1,24 @@
+# app/main.py
 from __future__ import annotations
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
+import logging
+from datetime import datetime
 
-from .config import settings
-from .models import QuizRequest, QuizAcceptedResponse, ErrorResponse
-from .quiz_handler import process_quiz_chain
-from .utils import logger
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+from .config import get_settings
+from .models import QuizAck, QuizRequest
+from .quiz_handler import process_quiz
+from .utils import utc_now, logger
+
+settings = get_settings()
+
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 
 app = FastAPI(title=settings.app_name)
@@ -15,52 +26,48 @@ app = FastAPI(title=settings.app_name)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """
-    Convert invalid body/JSON into 400 (spec wants 400, not 422).
-    """
-    logger.warning("Invalid JSON or body: %s", exc)
+    # Spec: HTTP 400 for invalid JSON
     return JSONResponse(
         status_code=400,
-        content=ErrorResponse(
-            status="error",
-            detail="Invalid JSON payload or missing required fields.",
-        ).model_dump(),
+        content={"detail": "Invalid request JSON", "errors": exc.errors()},
     )
 
 
-@app.get("/health", response_class=JSONResponse)
-async def health():
-    return {"status": "ok"}
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "time": utc_now().isoformat()}
 
 
-@app.post("/", response_model=QuizAcceptedResponse)
-async def root_quiz_endpoint(
-    payload: QuizRequest,
-    background_tasks: BackgroundTasks,
-):
+@app.post("/")
+async def handle_quiz(request_body: QuizRequest, background_tasks: BackgroundTasks):
     """
-    Entry point hit by the evaluator.
+    Main endpoint:
 
-    1) Validate secret, return:
-       - 403 for invalid secret
-       - 200 JSON for valid secret
-    2) Start background task to handle the quiz chain.
+    - Verify secret (and optionally email).
+    - If invalid JSON => handled by validation_exception_handler (400).
+    - If invalid secret => 403.
+    - On success:
+        * immediately return 200 with small JSON
+        * start background task to solve the quiz.
     """
-    logger.info("Received quiz POST: email=%s url=%s", payload.email, payload.url)
+    # Verify secret
+    if request_body.secret != settings.secret:
+        raise HTTPException(status_code=403, detail="Invalid secret")
 
-    # Secret verification
-    if payload.secret != settings.secret:
-        logger.warning("Invalid secret for email=%s", payload.email)
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid secret.",
-        )
+    # Optionally, also verify email matches (not required by spec, but okay to be strict)
+    # if request_body.email != settings.email:
+    #     raise HTTPException(status_code=403, detail="Invalid email")
 
-    # Start async processing in background
-    background_tasks.add_task(process_quiz_chain, payload)
+    started_at = utc_now()
+    # 3 minutes from _this_ POST reaching your server
+    from .utils import deadline_after_minutes
+    deadline = deadline_after_minutes(3)
 
-    # Immediate 200 JSON response
-    return QuizAcceptedResponse(
-        status="ok",
-        detail="Request accepted. Quiz processing started.",
+    background_tasks.add_task(process_quiz, request_body, deadline)
+
+    ack = QuizAck(
+        message="Quiz processing started.",
+        started_at=started_at,
+        deadline=deadline,
     )
+    return ack

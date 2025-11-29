@@ -1,31 +1,30 @@
-from typing import Any, Dict, Optional
-from pydantic import BaseModel, AnyUrl, EmailStr, Field
+# app/models.py
+from datetime import datetime
+from typing import Any, Optional
+
+from pydantic import BaseModel, HttpUrl, Field
 
 
 class QuizRequest(BaseModel):
-    email: EmailStr
-    secret: str
-    url: AnyUrl
-
-    # Accept arbitrary extra fields from the evaluator
-    class Config:
-        extra = "allow"
+    email: str = Field(..., description="Student email ID")
+    secret: str = Field(..., description="Student-provided secret")
+    url: HttpUrl = Field(..., description="Quiz URL")
 
 
-class QuizAcceptedResponse(BaseModel):
+class QuizAck(BaseModel):
     status: str = "ok"
-    detail: str = "accepted"
+    message: str
+    started_at: datetime
+    deadline: datetime
 
 
-class ErrorResponse(BaseModel):
-    status: str = "error"
-    detail: str
+class SubmitResult(BaseModel):
+    correct: bool
+    url: Optional[HttpUrl] = None
+    reason: Optional[str] = None
+    raw_response: Optional[Any] = None
 
 
-class SolverResult(BaseModel):
-    submit_url: AnyUrl
+class SolverAnswer(BaseModel):
     answer: Any
-    # Extra fields to include when submitting
-    extra_payload: Dict[str, Any] = Field(default_factory=dict)
-    # Whether this quiz chain is complete
-    done: bool = False
+    answer_type: str  # "number" | "string" | "bool" | "object" | "file_base64"

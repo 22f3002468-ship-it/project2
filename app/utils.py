@@ -1,21 +1,32 @@
+# app/utils.py
+from __future__ import annotations
+
 import logging
-import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
+from typing import AsyncIterator
 
-logger = logging.getLogger("llm_quiz")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
-)
+logger = logging.getLogger("llm-quiz")
 
 
-@contextmanager
-def time_limit(seconds: float):
-    """
-    Soft time limit helper. We don't hard-kill, but we can log if exceeded.
-    """
-    start = time.monotonic()
-    yield
-    elapsed = time.monotonic() - start
-    if elapsed > seconds:
-        logger.warning("Block exceeded soft time limit: %.2fs > %.2fs", elapsed, seconds)
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def deadline_after_minutes(minutes: int) -> datetime:
+    return utc_now() + timedelta(minutes=minutes)
+
+
+def within_deadline(deadline: datetime) -> bool:
+    return utc_now() < deadline
+
+
+@asynccontextmanager
+async def log_time(scope: str) -> AsyncIterator[None]:
+    start = utc_now()
+    logger.info("Starting %s", scope)
+    try:
+        yield
+    finally:
+        dur = (utc_now() - start).total_seconds()
+        logger.info("Finished %s in %.2fs", scope, dur)
